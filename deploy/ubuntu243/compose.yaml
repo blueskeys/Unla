@@ -1,0 +1,48 @@
+name: unla243
+services:
+  gateway:
+    image: unla243-backend:${UNLA_REVISION:?revision required}
+    build:
+      context: ../..
+      dockerfile: deploy/ubuntu243/Dockerfile
+      target: backend
+    command: [mcp-gateway, --conf, /etc/unla/mcp-gateway.yaml]
+    env_file: ${UNLA_ENV_FILE:?env file required}
+    environment:
+      NOTIFIER_TYPE: api
+      NOTIFIER_API_PORT: "5335"
+      MCP_GATEWAY_PID: /tmp/unla-gateway.pid
+    volumes:
+      - ${UNLA_DATA_DIR:?data directory required}:/app/data
+    ports:
+      - "192.168.100.243:5235:5235"
+    restart: unless-stopped
+    mem_limit: 512m
+    logging: &logging
+      driver: json-file
+      options: {max-size: 10m, max-file: "3"}
+  apiserver:
+    image: unla243-backend:${UNLA_REVISION:?revision required}
+    command: [apiserver, --conf, /etc/unla/apiserver.yaml]
+    env_file: ${UNLA_ENV_FILE:?env file required}
+    environment:
+      APISERVER_NOTIFIER_TYPE: api
+      APISERVER_NOTIFIER_API_TARGET_URL: http://gateway:5335/_reload
+    volumes:
+      - ${UNLA_DATA_DIR:?data directory required}:/app/data
+    depends_on: [gateway]
+    restart: unless-stopped
+    mem_limit: 512m
+    logging: *logging
+  web:
+    image: unla243-web:${UNLA_REVISION:?revision required}
+    build:
+      context: ../..
+      dockerfile: deploy/ubuntu243/Dockerfile
+      target: frontend
+    ports:
+      - "192.168.100.243:8080:80"
+    depends_on: [apiserver]
+    restart: unless-stopped
+    mem_limit: 128m
+    logging: *logging
