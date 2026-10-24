@@ -4,6 +4,7 @@ from pathlib import Path
 import ssl
 import urllib.error
 import urllib.request
+import yaml
 
 origin = 'https://192.168.100.243:8443'
 endpoint = origin + '/gateway/liveops-beta/mcp'
@@ -34,7 +35,8 @@ assert request(endpoint, listing, {'Mcp-Session-Id': session})[0] == 401
 assert request(endpoint, listing, {**auth, 'Authorization': 'Bearer invalid-liveops-fixture-b'})[0] == 403
 assert request(origin + '/gateway/exai-test/mcp', listing, auth)[0] == 403
 status, data, _ = request(endpoint, listing, auth)
-assert status == 200 and [tool['name'] for tool in data['result']['tools']] == ['liveops_list_boards']
+expected = yaml.safe_load(Path(__file__).with_name('liveops-beta.yaml').read_text())
+assert status == 200 and {tool['name'] for tool in data['result']['tools']} == {tool['name'] for tool in expected['tools']}
 status, data, _ = request(endpoint, {'jsonrpc': '2.0', 'id': 3, 'method': 'tools/call', 'params': {'name': 'liveops_list_boards', 'arguments': {'q': ''}}}, auth)
 assert status == 200 and data.get('result', {}).get('isError') is True, (status, data)
 assert 'invalid-liveops-fixture-a' not in json.dumps(data)
@@ -43,4 +45,4 @@ try:
     urllib.request.urlopen(req, context=context, timeout=10).close()
 except urllib.error.HTTPError as error:
     assert error.code in (200, 202, 204, 405)
-print('PASS: missing bearer 401; changed bearer/cross-prefix 403; invalid upstream bearer isError; one approved read tool')
+print('PASS: missing bearer 401; changed bearer/cross-prefix 403; invalid upstream bearer isError; approved read-only directory matches')

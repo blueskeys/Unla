@@ -10,6 +10,14 @@ servers:
     description: live-ops 9731 Beta 只读货盘查询
     allowedTools:
       - liveops_list_boards
+      - liveops_get_board_goods
+      - liveops_get_pallet_workspace
+      - liveops_list_pallet_sessions
+      - liveops_get_session_assortment
+      - liveops_get_pallet_product
+      - liveops_list_replays
+      - liveops_list_products
+      - liveops_get_product_workspace
 tools:
   - name: liveops_list_boards
     description: 查询当前登录用户有权访问的 live-ops Beta 货盘。每次返回前五条及总数；这是验收环境数据。可以按货盘名称或编号搜索，不修改数据。
@@ -30,3 +38,96 @@ tools:
       {{ else }}
       {"error":"LIVEOPS_REQUEST_REJECTED","message":"货盘查询未成功，请核对当前用户登录状态与货盘查询权限。"}
       {{ end }}
+  - name: liveops_get_board_goods
+    description: 读取当前用户有权访问的 Beta 货盘及在用商品摘要，不返回已移除商品、回收站或成本。上游无分页，超出响应预算会失败；读取可能生成本地缩略图缓存，但不更新业务记录。先通过货盘列表取得 board_id。
+    method: GET
+    endpoint: http://100.92.212.67:9731/api/boards/{{.Args.board_id}}
+    headers: {Accept: application/json, Accept-Encoding: identity}
+    annotations: {readOnlyHint: true, destructiveHint: false, idempotentHint: true}
+    args:
+      - {name: board_id, position: path, required: true, type: string, description: 货盘列表返回的货盘ID}
+    responseBody: |-
+      {{$d := fromJson .Response.Body}}{{if hasKey $d "goods"}}
+      {"environment":"beta-9731","board":{{toJSON (pick $d.board "id" "name" "bms_dept_id" "bms_dept_name")}},"total":{{len $d.goods}},"items":[{{range $i,$g := $d.goods}}{{if $i}},{{end}}{{toJSON (pick $g "id" "sku" "name" "category" "listing_type" "price" "available_stock" "is_new" "order_seq" "presale_days" "inventory_structure")}}{{end}}]}
+      {{else}}{{fail "LIVEOPS_BOARD_QUERY_REJECTED"}}{{end}}
+  - name: liveops_get_pallet_workspace
+    description: 查询指定货盘已有的直播间身份、排期设置、迁移状态和版本；不会创建工作空间。blocked 或不存在不能视为可排期。
+    method: GET
+    endpoint: http://100.92.212.67:9731/api/boards/{{.Args.board_id}}/pallet-workspace
+    headers: {Accept: application/json, Accept-Encoding: identity}
+    annotations: {readOnlyHint: true, destructiveHint: false, idempotentHint: true}
+    args:
+      - {name: board_id, position: path, required: true, type: string, description: 货盘列表返回的货盘ID}
+    responseBody: |-
+      {{$d := fromJson .Response.Body}}{{if hasKey $d "migration_status"}}{{toJSON (pick $d "id" "board_id" "live_room_id" "default_start_time" "timezone" "weekly_rest_rule" "version" "migration_status" "migration_reason")}}{{else}}{{fail "LIVEOPS_WORKSPACE_QUERY_REJECTED"}}{{end}}
+  - name: liveops_list_pallet_sessions
+    description: 查询指定货盘在日期闭区间内已存的计划场次，不自动创建或维护场次。日期格式YYYY-MM-DD，建议一次7天，最多日期差90天；空结果不表示休播。场次ID用于查询上播表。
+    method: GET
+    endpoint: http://100.92.212.67:9731/api/boards/{{.Args.board_id}}/pallet-sessions
+    headers: {Accept: application/json, Accept-Encoding: identity}
+    annotations: {readOnlyHint: true, destructiveHint: false, idempotentHint: true}
+    args:
+      - {name: board_id, position: path, required: true, type: string, description: 已确认有权限的货盘ID}
+      - {name: from_date, position: query, required: true, type: string, description: 开始日期YYYY-MM-DD}
+      - {name: through_date, position: query, required: true, type: string, description: 结束日期YYYY-MM-DD，不早于开始且日期差不超过90天}
+    responseBody: |-
+      {{$d := fromJson .Response.Body}}{{if kindIs "slice" $d}}
+      {"total":{{len $d}},"items":[{{range $i,$s := $d}}{{if $i}},{{end}}{{toJSON (pick $s "id" "pallet_id" "business_date" "planned_start_at" "sequence_in_day" "kind" "status" "version")}}{{end}}]}
+      {{else}}{{fail "LIVEOPS_SESSIONS_QUERY_REJECTED"}}{{end}}
+  - name: liveops_get_session_assortment
+    description: 查询指定货盘计划场次的上播表成员、顺序、锁定和版本，不是上品表，不含商品名称价格库存。not_generated表示尚未生成，不表示确认无商品；可结合货盘商品摘要解释goods_id。
+    method: GET
+    endpoint: http://100.92.212.67:9731/api/boards/{{.Args.board_id}}/pallet-sessions/{{.Args.session_id}}/assortment
+    headers: {Accept: application/json, Accept-Encoding: identity}
+    annotations: {readOnlyHint: true, destructiveHint: false, idempotentHint: true}
+    args:
+      - {name: board_id, position: path, required: true, type: string, description: 货盘ID}
+      - {name: session_id, position: path, required: true, type: string, description: 此货盘的计划场次查询返回的ID}
+    responseBody: |-
+      {{$d := fromJson .Response.Body}}{{if hasKey $d "planned_session_id"}}
+      {"planned_session_id":{{toJSON $d.planned_session_id}},"assortment_version":{{toJSON $d.assortment_version}},"generated_live_board_version":{{toJSON $d.generated_live_board_version}},"generation_status":{{toJSON $d.generation_status}},"total":{{len $d.items}},"items":[{{range $i,$g := $d.items}}{{if $i}},{{end}}{{toJSON (pick $g "planned_session_id" "goods_id" "role_at_session" "inclusion_source" "order_index" "is_temporary" "is_locked")}}{{end}}]}
+      {{else}}{{fail "LIVEOPS_ASSORTMENT_QUERY_REJECTED"}}{{end}}
+  - name: liveops_get_pallet_product
+    description: 查询指定货盘商品的生命周期、入选状态、首次排期及版本；不返回商品主档。已移除的历史场次成员可能查不到，不得因此否定历史成员事实。
+    method: GET
+    endpoint: http://100.92.212.67:9731/api/boards/{{.Args.board_id}}/pallet-products/{{.Args.goods_id}}
+    headers: {Accept: application/json, Accept-Encoding: identity}
+    annotations: {readOnlyHint: true, destructiveHint: false, idempotentHint: true}
+    args:
+      - {name: board_id, position: path, required: true, type: string, description: 货盘ID}
+      - {name: goods_id, position: path, required: true, type: string, description: 此货盘商品或上播表成员返回的goods_id，不是货号SKU}
+    responseBody: |-
+      {{$d := fromJson .Response.Body}}{{if hasKey $d "goods_id"}}{{toJSON (pick $d "pallet_id" "goods_id" "lifecycle_type" "baseline_selected" "planned_first_session_id" "missed_planned_session_id" "needs_enrichment" "first_live_at" "last_live_at" "version")}}{{else}}{{fail "LIVEOPS_PRODUCT_QUERY_REJECTED"}}{{end}}
+  - name: liveops_list_replays
+    description: 查询当前用户可访问货盘最近20条直播归档摘要及监控指标，不启动监控或采集。无分页及总历史条数；这不是当前是否正在直播的查询。缺失指标表示未知，不能补零或将订单数解释为件数。
+    method: GET
+    endpoint: http://100.92.212.67:9731/api/live-monitor/replays?limit=20
+    headers: {Accept: application/json, Accept-Encoding: identity}
+    annotations: {readOnlyHint: true, destructiveHint: false, idempotentHint: true}
+    responseBody: |-
+      {{$d := fromJson .Response.Body}}{{if hasKey $d "items"}}
+      {"limit":20,"returned":{{len $d.items}},"items":[{{range $i,$r := $d.items}}{{if $i}},{{end}}{"session_key":{{toJSON $r.session_key}},"board_id":{{toJSON $r.board_id}},"room_id":{{toJSON $r.room_id}},"name":{{toJSON $r.name}},"start_time":{{toJSON $r.start_time}},"ended_at":{{toJSON $r.ended_at}},"snapshot_count":{{toJSON $r.snapshot_count}},"latest":{{if and (kindIs "map" $r.latest) (kindIs "map" $r.latest.summary)}}{{toJSON (pick $r.latest.summary "live_title" "start_time" "duration" "live_status" "watch_ucnt" "pay_order_cnt" "pay_order_gmv_yuan" "fans" "fan_pay_ucnt_ratio" "fan_pay_amt_ratio")}}{{else}}null{{end}}}{{end}}]}
+      {{else}}{{fail "LIVEOPS_REPLAYS_QUERY_REJECTED"}}{{end}}
+  - name: liveops_list_products
+    description: 查询商品中心全局商品主档摘要，要求当前用户具有product_library查询权限，不是某个货盘内的商品。每页固定20条，可按货号或名称q搜索；仅已存数据，不触发归集或采集，不返回成本与跨货盘明细。
+    method: GET
+    endpoint: http://100.92.212.67:9731/api/product-library/products?page_size=20
+    headers: {Accept: application/json, Accept-Encoding: identity}
+    annotations: {readOnlyHint: true, destructiveHint: false, idempotentHint: true}
+    args:
+      - {name: q, position: query, type: string, description: 货号或名称搜索词，最长120字符}
+      - {name: page, position: query, type: integer, default: "1", description: 页码，从1开始}
+    responseBody: |-
+      {{$d := fromJson .Response.Body}}{{if hasKey $d "items"}}
+      {"scope":"global_product_library","total":{{toJSON $d.total}},"page":{{toJSON $d.page}},"page_size":{{toJSON $d.page_size}},"total_pages":{{toJSON $d.total_pages}},"items":[{{range $i,$p := $d.items}}{{if $i}},{{end}}{{toJSON (pick $p "sku" "display_sku" "product_name" "category" "size_text" "reference_price" "updated_at" "quality_status" "quality_issue_count")}}{{end}}]}
+      {{else}}{{fail "LIVEOPS_LIBRARY_QUERY_REJECTED"}}{{end}}
+  - name: liveops_get_product_workspace
+    description: 查询商品中心共享单品清单和商品集摘要，要求product_library查询权限。是全局共享范围，不按货盘或创建者隔离；读取已存数据，不创建商品集、不触发采集。上游无分页，超出响应预算会失败。
+    method: GET
+    endpoint: http://100.92.212.67:9731/api/product-library/workspace
+    headers: {Accept: application/json, Accept-Encoding: identity}
+    annotations: {readOnlyHint: true, destructiveHint: false, idempotentHint: true}
+    responseBody: |-
+      {{$d := fromJson .Response.Body}}{{if hasKey $d "single_items"}}
+      {"scope":"global_product_library","single_items":[{{range $i,$p := $d.single_items}}{{if $i}},{{end}}{{toJSON (pick $p "sku" "display_sku" "product_name" "category" "reference_price" "updated_at" "quality_status")}}{{end}}],"sets":[{{range $i,$s := $d.sets}}{{if $i}},{{end}}{{toJSON (pick $s "id" "name" "item_count" "created_at" "updated_at")}}{{end}}]}
+      {{else}}{{fail "LIVEOPS_LIBRARY_WORKSPACE_REJECTED"}}{{end}}

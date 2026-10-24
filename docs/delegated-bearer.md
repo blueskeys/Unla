@@ -22,7 +22,7 @@ tools:
         default: "1"
 ```
 
-这是认证模式及工具约束示例，不是实际业务 API 清单；真实地址、路径和响应投影必须由已批准配置指定。此实现没有修改 deploy。
+这是认证模式及工具约束示例，不是实际业务 API 清单；真实地址、路径和响应投影必须由已批准配置指定。Beta 实际清单见 `deploy/ubuntu243/liveops-beta.yaml`。
 
 ## 凭证与会话
 
@@ -35,7 +35,7 @@ tools:
 
 ## 固定只读出口
 
-执行前要求工具方法为 GET/HEAD，endpoint 为不含模板的字面量 HTTP(S) URL，不含 userinfo/fragment；仅允许 query 参数，不允许请求正文、工具代理或重定向。allowedTools 继续控制工具发现与执行。非 JSON/文本响应拒绝。
+执行前要求工具方法为 GET/HEAD，endpoint 为固定 HTTP(S) origin，不含 userinfo/fragment。允许 query 参数，以及完整路径段形式的 `{{.Args.identifier}}`：必须声明为 `position: path, required: true, type: string`，原始实参匹配 `^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$`；缺失不能回退默认值。主机、端口、query 和部分路径段均不接受模板。不允许请求正文、工具代理或重定向。allowedTools 继续控制工具发现与执行。非 JSON/文本响应拒绝。
 
 GET/HEAD 不证明业务无副作用；仅配置经确认只读的 API。目标没有硬编码为 live-ops 主机，管理配置和网络出口仍是信任边界。不得开放任意模型 URL 或带写入语义的 GET API。
 

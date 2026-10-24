@@ -371,6 +371,9 @@ func (s *Server) executeHTTPTool(c *gin.Context, conn session.Connection, tool *
 		if err := validateDelegatedTool(tool); err != nil {
 			return nil, err
 		}
+		if err := validateDelegatedPathArgs(tool, args); err != nil {
+			return nil, err
+		}
 	}
 
 	// Get logger from Gin context (already has trace ID from middleware)

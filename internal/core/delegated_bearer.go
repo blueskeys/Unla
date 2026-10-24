@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 
 	"github.com/amoylab/unla/internal/common/cnst"
@@ -85,20 +86,58 @@ func (s *Server) authorizeDelegatedRequest(c *gin.Context, prefix string) bool {
 	return true
 }
 
+var delegatedPathPlaceholder = regexp.MustCompile(`^\{\{\.Args\.([A-Za-z_][A-Za-z0-9_]*)\}\}$`)
+var delegatedPathValue = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$`)
+
 func validateDelegatedTool(tool *config.ToolConfig) error {
 	if tool.Method != http.MethodGet && tool.Method != http.MethodHead {
 		return fmt.Errorf("delegated tool must use GET or HEAD")
 	}
 	u, err := url.Parse(tool.Endpoint)
-	if err != nil || u == nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.User != nil || u.Fragment != "" || strings.ContainsAny(tool.Endpoint, "{}") {
-		return fmt.Errorf("delegated tool requires a fixed HTTP(S) endpoint")
+	if err != nil || u == nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.User != nil || u.Fragment != "" || strings.ContainsAny(u.Host+u.RawQuery, "{}") {
+		return fmt.Errorf("delegated tool requires a fixed HTTP(S) origin and query")
+	}
+	path := u.Path
+	if u.RawPath != "" {
+		path = u.RawPath
+	}
+	pathArgs := make(map[string]bool)
+	for _, segment := range strings.Split(path, "/") {
+		if match := delegatedPathPlaceholder.FindStringSubmatch(segment); match != nil {
+			pathArgs[match[1]] = false
+		} else if strings.ContainsAny(segment, "{}") {
+			return fmt.Errorf("delegated path template must be a complete segment using .Args.identifier")
+		}
 	}
 	if tool.RequestBody != "" || tool.Proxy != nil {
 		return fmt.Errorf("delegated tool body and proxy are forbidden")
 	}
 	for _, arg := range tool.Args {
-		if arg.Position != "query" {
-			return fmt.Errorf("delegated tool only supports query arguments")
+		if declared, used := pathArgs[arg.Name]; used {
+			if declared || arg.Position != "path" || arg.Type != "string" || !arg.Required {
+				return fmt.Errorf("delegated path argument %q must have one required string path declaration", arg.Name)
+			}
+			pathArgs[arg.Name] = true
+		} else if arg.Position != "query" {
+			return fmt.Errorf("delegated tool only supports query arguments and declared path placeholders")
+		}
+	}
+	for name, declared := range pathArgs {
+		if !declared {
+			return fmt.Errorf("delegated path argument %q is undeclared", name)
+		}
+	}
+	return nil
+}
+
+func validateDelegatedPathArgs(tool *config.ToolConfig, args map[string]any) error {
+	for _, arg := range tool.Args {
+		if arg.Position != "path" {
+			continue
+		}
+		value, ok := args[arg.Name].(string)
+		if !ok || !delegatedPathValue.MatchString(value) {
+			return fmt.Errorf("delegated path argument %q requires a 1-128 character ASCII identifier", arg.Name)
 		}
 	}
 	return nil
