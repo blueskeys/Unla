@@ -1,6 +1,7 @@
 """串行扩展既有 Beta 配置，备份并保留旧工具契约，不输出凭证。"""
 import json
 import os
+from datetime import datetime, timezone
 from pathlib import Path
 import subprocess
 import urllib.request
@@ -59,11 +60,15 @@ assert all(tool["method"] == "GET" for tool in desired["tools"])
 if set(old_tools) == set(new_tools) and same_contract(old["servers"], desired["servers"]):
     print("No change: existing Beta configuration already matches")
 else:
-    backup = Path.home() / ".config/unla243/liveops-before-read-expansion.json"
-    if not backup.exists():
-        fd = os.open(backup, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        with os.fdopen(fd, "w") as stream:
-            json.dump(old, stream, ensure_ascii=False)
+    versions = request("GET", "/api/mcp/configs/versions?tenant=default&names=liveops-beta", headers=headers)["data"]
+    active = [version for version in versions if version["is_active"]]
+    assert len(active) == 1, "Cannot identify the active configuration for backup"
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+    backup = Path.home() / (".config/unla243/liveops-before-read-expansion-" + stamp + ".json")
+    fd = os.open(backup, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, "w") as stream:
+        json.dump({"configuration": old, "active_version": active[0]}, stream, ensure_ascii=False)
+    print("Previous configuration backup: " + str(backup))
     request("PUT", "/api/mcp/configs", TARGET.read_bytes(), headers)
     saved = next(item for item in request("GET", "/api/mcp/configs", headers=headers)["data"] if item["name"] == "liveops-beta" and item["tenant"] == "default")
     assert same_contract(saved, visible_desired), "Saved configuration mismatch; keep ExAI binding unchanged"

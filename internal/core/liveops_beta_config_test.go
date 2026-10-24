@@ -21,7 +21,6 @@ func TestLiveopsBetaConfig(t *testing.T) {
 	var cfg config.MCPConfig
 	require.NoError(t, yaml.Unmarshal(data, &cfg))
 	require.NoError(t, config.ValidateMCPConfigs([]*config.MCPConfig{&cfg}))
-	require.Len(t, cfg.Tools, 9)
 	require.Equal(t, "delegated_bearer", string(cfg.Routers[0].Auth.Mode))
 	fixtures := map[string]string{
 		"liveops_list_boards":            `{"items":[{"id":"b1","name":"fixture","goods_count":1}],"total":1,"page":1,"page_size":5}`,
@@ -34,7 +33,20 @@ func TestLiveopsBetaConfig(t *testing.T) {
 		"liveops_list_products":          `{"items":[{"sku":"SKU1","product_name":"fixture","cost":"DO_NOT_EXPOSE"}],"total":1,"page":1,"page_size":20,"total_pages":1,"summary":"DO_NOT_EXPOSE"}`,
 		"liveops_get_product_workspace":  `{"single_items":[{"sku":"SKU1","cost":"DO_NOT_EXPOSE"}],"sets":[{"id":"set1","name":"fixture","created_by":"DO_NOT_EXPOSE"}]}`,
 	}
+	fixtureData, err := os.ReadFile("testdata/liveops_beta_expansion.json")
+	require.NoError(t, err)
+	var expansion map[string]string
+	require.NoError(t, json.Unmarshal(fixtureData, &expansion))
+	for name, fixture := range expansion {
+		require.NotContains(t, fixtures, name)
+		fixtures[name] = fixture
+	}
+	require.Len(t, cfg.Tools, len(fixtures))
+	require.Len(t, cfg.Servers[0].AllowedTools, len(fixtures))
+	seen := make(map[string]bool)
 	for _, tool := range cfg.Tools {
+		require.False(t, seen[tool.Name], "duplicate tool: %s", tool.Name)
+		seen[tool.Name] = true
 		t.Run(tool.Name, func(t *testing.T) {
 			require.Contains(t, cfg.Servers[0].AllowedTools, tool.Name)
 			require.Equal(t, http.MethodGet, tool.Method)
@@ -54,8 +66,21 @@ func TestLiveopsBetaConfig(t *testing.T) {
 			result, err = CreateResponseHandlerChain().Handle(resp, &tool, template.NewContext())
 			if err == nil {
 				require.True(t, result.IsError)
+				encoded, marshalErr := json.Marshal(result)
+				require.NoError(t, marshalErr)
+				require.NotContains(t, string(encoded), "DO_NOT_EXPOSE")
 			} else {
 				require.NotContains(t, err.Error(), "DO_NOT_EXPOSE")
+			}
+			if _, added := expansion[tool.Name]; added {
+				resp.StatusCode = http.StatusOK
+				resp.Body = io.NopCloser(strings.NewReader(`{"detail":"DO_NOT_EXPOSE"}`))
+				result, err = CreateResponseHandlerChain().Handle(resp, &tool, template.NewContext())
+				if err == nil {
+					require.True(t, result.IsError, "unexpected upstream shape must fail")
+				} else {
+					require.NotContains(t, err.Error(), "DO_NOT_EXPOSE")
+				}
 			}
 		})
 	}
