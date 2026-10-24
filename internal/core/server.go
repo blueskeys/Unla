@@ -247,6 +247,9 @@ func (s *Server) handleRoot(c *gin.Context) {
 		zap.String("remote_addr", c.Request.RemoteAddr))
 
 	// Check auth configuration
+	if !s.authorizeDelegatedRequest(c, prefix) {
+		return
+	}
 	auth := s.state.GetAuth(prefix)
 	if auth != nil && auth.Mode == cnst.AuthModeOAuth2 {
 		// Validate access token

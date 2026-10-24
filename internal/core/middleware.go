@@ -41,7 +41,7 @@ func (s *Server) loggerMiddleware() gin.HandlerFunc {
 			headers := make(map[string]string)
 			for k, v := range c.Request.Header {
 				// Filter out sensitive header information
-				if k != "Authorization" && k != "Cookie" {
+				if !strings.EqualFold(k, "Authorization") && !strings.EqualFold(k, "Cookie") {
 					headers[k] = strings.Join(v, ", ")
 				}
 			}
@@ -106,7 +106,7 @@ func (s *Server) recoveryMiddleware() gin.HandlerFunc {
 				httpRequest := c.Request
 				headers := make(map[string]string)
 				for k, v := range httpRequest.Header {
-					if k != "Authorization" && k != "Cookie" {
+					if !strings.EqualFold(k, "Authorization") && !strings.EqualFold(k, "Cookie") {
 						headers[k] = strings.Join(v, ", ")
 					}
 				}

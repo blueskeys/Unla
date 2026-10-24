@@ -92,6 +92,7 @@ func (s *Server) handleSSE(c *gin.Context) {
 		zap.String("user_agent", c.Request.UserAgent()),
 	)
 
+	s.bindDelegatedSession(c.Request, meta)
 	conn, err := s.sessions.Register(ctx, meta)
 	if err != nil {
 		logger.Error("failed to register SSE session",

@@ -49,7 +49,7 @@ func parseContentEncodings(contentEncoding string) []string {
 	return encodings
 }
 
-func decodeBodyBytesByEncoding(body []byte, encoding string) ([]byte, error) {
+func decodeBodyBytesWithContext(ctx context.Context, body []byte, encoding string) ([]byte, error) {
 	var (
 		reader      io.Reader = bytes.NewReader(body)
 		closeFn     func() error
@@ -67,7 +67,7 @@ func decodeBodyBytesByEncoding(body []byte, encoding string) ([]byte, error) {
 	case "br":
 		reader = brotli.NewReader(reader)
 	case "zstd":
-		zstdReader, err := zstd.NewReader(reader)
+		zstdReader, err := zstd.NewReader(reader, zstd.WithDecoderMaxMemory(16<<20), zstd.WithDecoderMaxWindow(8<<20), zstd.WithDecoderConcurrency(1))
 		if err != nil {
 			return nil, fmt.Errorf("failed to create zstd reader: %w", err)
 		}
@@ -88,10 +88,10 @@ func decodeBodyBytesByEncoding(body []byte, encoding string) ([]byte, error) {
 		reader = flateReader
 		closeFn = flateReader.Close
 	default:
-		return nil, fmt.Errorf("unsupported content encoding: %s", encoding)
+		return nil, fmt.Errorf("unsupported content encoding")
 	}
 
-	decoded, err := io.ReadAll(reader)
+	decoded, err := readHTTPBody(ctx, reader)
 	if err != nil {
 		decodeError = fmt.Errorf("failed to decode %s body: %w", encoding, err)
 	}
@@ -112,18 +112,25 @@ func decodeBodyBytesByEncoding(body []byte, encoding string) ([]byte, error) {
 }
 
 func readDecodedResponseBody(resp *http.Response) ([]byte, error) {
+	ctx := context.Background()
+	if resp != nil && resp.Request != nil {
+		ctx = resp.Request.Context()
+	}
 	if resp == nil || resp.Body == nil {
 		return nil, nil
 	}
 
-	body, err := io.ReadAll(resp.Body)
+	encodings := parseContentEncodings(resp.Header.Get("Content-Encoding"))
+	if len(encodings) > maxContentEncodingLayers {
+		return nil, fmt.Errorf("too many content encoding layers")
+	}
+	body, err := readHTTPBody(ctx, resp.Body)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read response body: %w", err)
 	}
 
-	encodings := parseContentEncodings(resp.Header.Get("Content-Encoding"))
 	for i := len(encodings) - 1; i >= 0; i-- {
-		body, err = decodeBodyBytesByEncoding(body, encodings[i])
+		body, err = decodeBodyBytesWithContext(ctx, body, encodings[i])
 		if err != nil {
 			return nil, err
 		}
@@ -320,7 +327,9 @@ func (s *Server) createHTTPClient(tool *config.ToolConfig, pinnedAddr string) (*
 		}
 	}
 
+	baseTransport.DisableCompression = true
 	return &http.Client{
+		Timeout:   httpToolTimeout,
 		Transport: otelhttp.NewTransport(baseTransport),
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			if len(via) >= 10 {
@@ -345,8 +354,24 @@ func (s *Server) executeHTTPTool(c *gin.Context, conn session.Connection, tool *
 			attribute.String(cnst.AttrMCPPrefix, conn.Meta().Prefix),
 			attribute.String(cnst.AttrMCPTool, tool.Name),
 		)
-	ctx := scope.Ctx
+	ctx, cancel := context.WithTimeout(scope.Ctx, httpToolTimeout)
+	defer cancel()
 	defer scope.End()
+	delegated := s.delegatedBearer(conn.Meta().Prefix)
+	authorization := ""
+	if delegated {
+		var digest string
+		authorization, digest = currentBearer(c.Request)
+		if authorization == "" {
+			return nil, fmt.Errorf("current bearer required")
+		}
+		if conn.Meta().ID != "" && (conn.Meta().BearerDigest == "" || conn.Meta().BearerDigest != digest) {
+			return nil, fmt.Errorf("session binding mismatch")
+		}
+		if err := validateDelegatedTool(tool); err != nil {
+			return nil, err
+		}
+	}
 
 	// Get logger from Gin context (already has trace ID from middleware)
 	logger := s.getLogger(c)
@@ -355,7 +380,9 @@ func (s *Server) executeHTTPTool(c *gin.Context, conn session.Connection, tool *
 	fillDefaultArgs(tool, args)
 
 	// Transfer forward headers from args to request HTTP headers
-	s.transferForwardHeaders(args, c.Request)
+	if !delegated {
+		s.transferForwardHeaders(args, c.Request)
+	}
 
 	// Normalize JSON string values in arguments
 	template.NormalizeJSONStringValues(args)
@@ -368,7 +395,15 @@ func (s *Server) executeHTTPTool(c *gin.Context, conn session.Connection, tool *
 		zap.String("remote_addr", c.Request.RemoteAddr))
 
 	// Prepare template context
-	tmplCtx, err := template.PrepareTemplateContext(conn.Meta().Request, args, c.Request, serverCfg)
+	templateRequest := c.Request
+	requestMeta := conn.Meta().Request
+	if delegated {
+		templateRequest = c.Request.Clone(ctx)
+		templateRequest.Header.Del("Authorization")
+		templateRequest.Header.Del("Cookie")
+		requestMeta = nil
+	}
+	tmplCtx, err := template.PrepareTemplateContext(requestMeta, args, templateRequest, serverCfg)
 	if err != nil {
 		logger.Error("failed to prepare template context",
 			zap.String("tool", tool.Name),
@@ -398,7 +433,7 @@ func (s *Server) executeHTTPTool(c *gin.Context, conn session.Connection, tool *
 	}
 
 	// Optionally capture selected downstream request fields via templates on span
-	if s.traceCapture.DownstreamRequest.Enabled {
+	if !delegated && s.traceCapture.DownstreamRequest.Enabled {
 		include := s.traceCapture.DownstreamRequest.IncludeFields
 		maxLen := s.traceCapture.DownstreamRequest.MaxFieldLength
 		if len(include) > 0 {
@@ -421,14 +456,20 @@ func (s *Server) executeHTTPTool(c *gin.Context, conn session.Connection, tool *
 	}
 
 	// Log request details at debug level
-	logger.Debug("tool request details",
-		zap.String("tool", tool.Name),
-		zap.String("url", req.URL.String()),
-		zap.String("method", req.Method),
-		zap.Any("headers", req.Header))
+	if !delegated {
+		logger.Debug("tool request details",
+			zap.String("tool", tool.Name),
+			zap.String("url", req.URL.String()),
+			zap.String("method", req.Method),
+			zap.Any("headers", req.Header))
+	}
 
 	// Process arguments
 	processArguments(req, tool, args)
+	if delegated {
+		req.Header.Set("Authorization", authorization)
+		req.Header.Del("Cookie")
+	}
 
 	// Execute request
 	cli, err := s.createHTTPClient(tool, pinnedAddr)
@@ -440,6 +481,9 @@ func (s *Server) executeHTTPTool(c *gin.Context, conn session.Connection, tool *
 		return nil, fmt.Errorf("failed to create HTTP client: %w", err)
 	}
 
+	if delegated {
+		cli.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	}
 	logger.Debug("sending HTTP request",
 		zap.String("tool", tool.Name),
 		zap.String("url", req.URL.String()),
@@ -457,6 +501,15 @@ func (s *Server) executeHTTPTool(c *gin.Context, conn session.Connection, tool *
 		return nil, fmt.Errorf("failed to execute request: %w", err)
 	}
 	defer resp.Body.Close()
+	if delegated && resp.StatusCode >= 300 && resp.StatusCode < 400 {
+		return nil, fmt.Errorf("delegated upstream redirect refused")
+	}
+	if delegated {
+		contentType := strings.ToLower(resp.Header.Get("Content-Type"))
+		if !strings.HasPrefix(contentType, "application/json") && !strings.HasPrefix(contentType, "text/") {
+			return nil, fmt.Errorf("delegated upstream must return JSON or text")
+		}
+	}
 
 	// Read and decode response body for logging and unified downstream processing.
 	respBodyBytes, err := readDecodedResponseBody(resp)
@@ -470,19 +523,24 @@ func (s *Server) executeHTTPTool(c *gin.Context, conn session.Connection, tool *
 	}
 
 	// Restore decoded response body for further processing.
+	if delegated && bytes.Contains(respBodyBytes, []byte(strings.TrimPrefix(authorization, "Bearer "))) {
+		return nil, fmt.Errorf("upstream response contains credential")
+	}
 	resp.Body = io.NopCloser(bytes.NewBuffer(respBodyBytes))
 	resp.Header.Del("Content-Encoding")
 	resp.Header.Del("Content-Length")
 
 	// Log response status
-	logger.Debug("received HTTP response",
-		zap.String("tool", tool.Name),
-		zap.String("session_id", conn.Meta().ID),
-		zap.String("response_body", string(respBodyBytes)),
-		zap.Int("status", resp.StatusCode))
+	if !delegated {
+		logger.Debug("received HTTP response",
+			zap.String("tool", tool.Name),
+			zap.String("session_id", conn.Meta().ID),
+			zap.String("response_body", string(respBodyBytes)),
+			zap.Int("status", resp.StatusCode))
+	}
 
 	// If downstream response indicates error, annotate the span with concise details per config
-	if resp.StatusCode >= 400 && s.traceCapture.DownstreamError.Enabled {
+	if !delegated && resp.StatusCode >= 400 && s.traceCapture.DownstreamError.Enabled {
 		maxLen := s.traceCapture.DownstreamError.MaxBodyLength
 		preview := utils.TruncateUTF8(string(respBodyBytes), maxLen)
 		scope.Span.SetStatus(codes.Error, fmt.Sprintf("HTTP %d", resp.StatusCode))
@@ -496,7 +554,7 @@ func (s *Server) executeHTTPTool(c *gin.Context, conn session.Connection, tool *
 	}
 
 	// Optionally capture all downstream responses (regardless of status code)
-	if s.traceCapture.DownstreamResponse.Enabled {
+	if !delegated && s.traceCapture.DownstreamResponse.Enabled {
 		maxLen := s.traceCapture.DownstreamResponse.MaxBodyLength
 		body := utils.TruncateUTF8(string(respBodyBytes), maxLen)
 		scope.Span.SetAttributes(
@@ -524,6 +582,16 @@ func (s *Server) executeHTTPTool(c *gin.Context, conn session.Connection, tool *
 		zap.Int("status", resp.StatusCode))
 
 	mergeToolResultMeta(callToolResult, tool.Meta)
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	encodedResult, err := json.Marshal(callToolResult)
+	if err != nil {
+		return nil, err
+	}
+	if len(encodedResult) > maxHTTPBodyBytes {
+		return nil, fmt.Errorf("HTTP tool result exceeds 4 MiB limit")
+	}
 	return callToolResult, nil
 }
 
@@ -618,7 +686,7 @@ func (s *Server) callHTTPTool(c *gin.Context, req mcp.JSONRPCRequest, conn sessi
 	}
 
 	// Log tool arguments at debug level
-	if logger.Core().Enabled(zap.DebugLevel) {
+	if !s.delegatedBearer(conn.Meta().Prefix) && logger.Core().Enabled(zap.DebugLevel) {
 		argsJSON, _ := json.Marshal(args)
 		logger.Debug("tool arguments",
 			zap.String("tool", params.Name),

@@ -1,0 +1,32 @@
+name: liveops-beta
+tenant: default
+routers:
+  - server: liveops-beta
+    prefix: /gateway/liveops-beta
+    auth:
+      mode: delegated_bearer
+servers:
+  - name: liveops-beta
+    description: live-ops 9731 Beta 只读货盘查询
+    allowedTools:
+      - liveops_list_boards
+tools:
+  - name: liveops_list_boards
+    description: 查询当前登录用户有权访问的 live-ops Beta 货盘。每次返回前五条及总数；这是验收环境数据。可以按货盘名称或编号搜索，不修改数据。
+    method: GET
+    endpoint: http://100.92.212.67:9731/api/boards?kind=boards&page=1&page_size=5
+    headers:
+      Accept: application/json
+      Accept-Encoding: identity
+    args:
+      - name: q
+        position: query
+        required: false
+        type: string
+        description: 货盘名称或编号搜索词，留空查询最近更新的五条。
+    responseBody: |-
+      {{ if hasKey .Response.Data "items" }}
+      {"environment":"beta-9731","total":{{toJSON .Response.Data.total}},"page":{{toJSON .Response.Data.page}},"page_size":{{toJSON .Response.Data.page_size}},"items":[{{range $i,$b := fromJSON .Response.Data.items}}{{if $i}},{{end}}{"id":{{toJSON $b.id}},"name":{{toJSON $b.name}},"department":{{toJSON $b.bms_dept_name}},"goods_count":{{toJSON $b.goods_count}}}{{end}}]}
+      {{ else }}
+      {"error":"LIVEOPS_REQUEST_REJECTED","message":"货盘查询未成功，请核对当前用户登录状态与货盘查询权限。"}
+      {{ end }}

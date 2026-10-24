@@ -17,5 +17,6 @@ const (
 type AuthMode string
 
 const (
-	AuthModeOAuth2 AuthMode = "oauth2"
+	AuthModeOAuth2          AuthMode = "oauth2"
+	AuthModeDelegatedBearer AuthMode = "delegated_bearer"
 )

@@ -165,6 +165,7 @@ func (s *Server) handlePost(c *gin.Context) {
 				Type:      "streamable",
 				Request:   requestInfoFromHTTPRequest(c.Request),
 			}
+			s.bindDelegatedSession(c.Request, meta)
 			conn, err = s.sessions.Register(c.Request.Context(), meta)
 			if err != nil {
 				s.sendProtocolError(c, req.Id, "Failed to create session", http.StatusInternalServerError, mcp.ErrorCodeInternalError)
