@@ -32,4 +32,19 @@
 
 新增完整路径段 ID 模板，执行前严格验证原始必填字符串；保持固定 origin、当前 Bearer、session token摘要/prefix绑定及禁转发覆盖。Go1.25.0 聚焦 delegated、配置模板、响应预算、解压限额及deadline测试通过（4.532秒），网关编译通过。Python部署脚本语法检查及 `git diff --check` 通过。未运行全量测试。
 
-实际发布、绑定和业务验收状态另行记录；静态与fixture测试不等于真实权限隔离验收。
+## 实际发布与验收
+
+- Unla 运行提交：`78882529aba553759abe825f4ebf45bf3381a6b5`，已推送 `beta`，243通过Git快进更新并本机构建。后端镜像 `unla243-backend:7888252`，摘要 `sha256:98c22cba382a690f95818491602265d662d4b82452df325ee1e80fa9552733db`。Web复用原镜像内容。
+- 两份SQLite通过在线backup API备份并完整性检查，目录 `/home/ubuntu/.config/unla243/before-7888252`；管理配置备份 `~/.config/unla243/liveops-before-read-expansion.json`。文件0600。临时构建代理隧道已关闭，10809无监听。
+- 注册9工具成功。远端拒绝测试通过：缺Bearer401、换token/跨prefix403、无效上游凭证isError、目录与配置一致。
+- 协议目录保留 `readOnlyHint=true`、`idempotentHint=true`，并补默认 `openWorldHint=true`；现有Go模型使用omitempty，`destructiveHint=false`在传输中省略，不能声称wire与YAML逐字段完全相同。这些提示不作为授权机制，实际只读由GET精确路径配置强制，ExAI发布风险显式为read。
+- ExAI MCP `4a69a354-2e60-49c9-acf3-c00e65bd738f` 发布v2；既有智能体 `639982cf-e4fe-40f5-b4c9-44296cd7d678` 更新revision2，绑定全部9工具并更新提示。保留execution、native_tools、其他绑定、名称及非默认状态；不创建重复配置，不改ExAI源码或重启ExAI。
+- 真实会话 `137f9b4a-3ad9-4748-a5be-098406342348`。首轮Run `19364176-aa27-491c-b819-9670ca3e7d8b`：货盘列表、工作空间、计划场次和商品中心工作区成功；商品摘要和复盘传输失败，商品分页被执行前门禁拦截。
+- 串行复验Run `fb00b2b6-4e75-49e9-a724-fc30d1d702e7`：商品摘要、复盘、商品分页、生命周期全部 `is_error=false`，分别10606/17471/1848/1728毫秒。不能把首轮并发故障解释为已定位或已修复；未改权限或改共享身份绕过。业务明细只保留在授权会话，不复制到仓库。
+- 上播表补验Run `ceda9711-f0f2-4de9-917b-ae651bdba199`：查询已有日期范围取得真实场次ID，上播表工具 `is_error=false`、658毫秒。未创建或维护场次。至此9个工具均有真实调用成功证据，但不宣称并发稳定性已验收。
+
+静态与fixture测试不等于真实权限隔离验收；尚无第二个真实受限账号隔离测试。Unla响应预算4MiB，ExAI还有更小的1MiB消息预算，达到任一限制都可能失败。上游无分页的大响应与较慢查询仍是限制。
+
+## 恢复
+
+优先通过ExAI正式API把该智能体绑定恢复到现有MCP v1（先读取最新revision，保留其他字段），不要删除历史版本。若须回退网关，使用已保留的 `unla243-backend:7c09604` 及原Web镜像；先把新增工具配置恢复为Git中 `7c09604:deploy/ubuntu243/liveops-beta.yaml`，再切换旧网关，避免旧版拒绝路径模板。不盲目覆盖备份以来的其他配置或数据库，不撤回既有认证保护。
