@@ -42,6 +42,11 @@ services:
       target: frontend
     ports:
       - "192.168.100.243:8080:80"
+      - "192.168.100.243:8443:443"
+    volumes:
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - /home/ubuntu/.config/unla243/tls/server.crt:/etc/unla-tls/server.crt:ro
+      - /home/ubuntu/.config/unla243/tls/server.key:/etc/unla-tls/server.key:ro
     depends_on: [apiserver]
     restart: unless-stopped
     mem_limit: 128m
