@@ -41,7 +41,7 @@ GET/HEAD 不证明业务无副作用；仅配置经确认只读的 API。目标�
 
 ## HTTP 预算
 
-所有 HTTP 工具共享常量：总 Context 预算及 HTTP Client Timeout 30 秒；传输体、每层解压体和序列化工具结果各最多 4 MiB；非 identity 编码最多 3 层。读取最多多探测 1 字节后拒绝，不依赖 Content-Length。禁用 Transport 隐式解压，由受限读取流程解码；zstd 窗口上限 8 MiB、内存参数上限 16 MiB、单解码并发。gzip/deflate/brotli 沿用库自身有界窗口。
+所有 HTTP 工具共享常量：总 Context 预算及 HTTP Client Timeout 30 秒；传输体、每层解压体和普通工具结果各最多 4 MiB；`delegated_bearer` 工具序列化结果进一步限制为 1 MiB，与 ExAI 的结果预算一致，超限返回工具错误，不静默截断，也不把过大的结果发给客户端触发整连接关闭。非 identity 编码最多 3 层。读取最多多探测 1 字节后拒绝，不依赖 Content-Length。禁用 Transport 隐式解压，由受限读取流程解码；zstd 窗口上限 8 MiB、内存参数上限 16 MiB、单解码并发。gzip/deflate/brotli 沿用库自身有界窗口。
 
 请求取消/更短的调用方 deadline 优先。读取与逐层解压检查 Context，转换后再次检查；同步模板函数不能被 Context 强行抢占，结果限额也不是模板内部临时分配限额。只使用经过审核的固定模板，本次未扩展通用模板沙箱。
 

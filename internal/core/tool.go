@@ -595,6 +595,10 @@ func (s *Server) executeHTTPTool(c *gin.Context, conn session.Connection, tool *
 	if len(encodedResult) > maxHTTPBodyBytes {
 		return nil, fmt.Errorf("HTTP tool result exceeds 4 MiB limit")
 	}
+	// Keep delegated results within the downstream MCP client's message budget.
+	if delegated && len(encodedResult) > maxDelegatedResultBytes {
+		return nil, fmt.Errorf("delegated tool result exceeds 1 MiB limit; narrow the query or use a paginated endpoint")
+	}
 	return callToolResult, nil
 }
 

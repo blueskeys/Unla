@@ -10,6 +10,7 @@ import (
 const (
 	httpToolTimeout          = 30 * time.Second
 	maxHTTPBodyBytes         = 4 << 20
+	maxDelegatedResultBytes  = 1 << 20
 	maxContentEncodingLayers = 3
 )
 
