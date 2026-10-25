@@ -1,5 +1,11 @@
 # delegated_bearer 局部保护
 
+## live-ops production 本地准备（2026-10-25）
+
+- [x] 独立生产五工具配置、仅创建注册脚本、无效凭证验收脚本及最小静态验证；详见 [任务计划与结果](liveops-prod-preparation.md)。本地准备完成，提交、部署和远程验收由主线程执行。
+
+Review：7 项 Python 模拟测试及 Go production/delegated 聚焦测试通过；YAML 严格解码、配置校验与五工具投影对比通过。未改 Beta、live-ops 或 ExAI，未注册、提交或部署，无本地阻断。
+
 ## 后续任务：live-ops 接口梳理与挂载
 
 - [x] 确认原实现保留：工作区干净，HEAD 为 `7c09604`，无需再次恢复文件。
