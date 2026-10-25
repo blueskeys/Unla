@@ -1,4 +1,5 @@
 import json
+import importlib.util
 from pathlib import Path
 import ssl
 import sys
@@ -9,8 +10,10 @@ ORIGIN = "https://192.168.100.243:8443"
 ENDPOINT = ORIGIN + "/gateway/liveops-prod/mcp"
 TOKEN_A = "invalid-liveops-production-fixture-a"
 TOKEN_B = "invalid-liveops-production-fixture-b"
-NAMES = {"liveops_list_boards", "liveops_get_pallet_workspace", "liveops_list_pallet_sessions",
-         "liveops_get_session_assortment", "liveops_list_replays"}
+spec = importlib.util.spec_from_file_location("production_registration", Path(__file__).with_name("register-liveops-prod.py"))
+registration = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(registration)
+NAMES = set(registration.NAMES)
 
 
 def require(condition, message):
@@ -73,7 +76,7 @@ def verify(request):
             require(status == expected and not leaked, "缺失认证/换token/跨Beta前缀拒绝验收失败")
         status, data, _, leaked = request(ENDPOINT, listing, auth)
         tools = data.get("result", {}).get("tools", [])
-        require(status == 200 and len(tools) == 5 and {t["name"] for t in tools} == NAMES and not leaked, "生产五工具目录不符")
+        require(status == 200 and len(tools) == len(NAMES) and {t["name"] for t in tools} == NAMES and not leaked, "生产工具目录不符")
         require(all("production" in t.get("description", "") and "beta" not in t.get("description", "").lower() for t in tools), "目录缺少production标识")
         call = {"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "liveops_list_boards", "arguments": {"q": ""}}}
         status, data, _, leaked = request(ENDPOINT, call, auth)
@@ -82,7 +85,7 @@ def verify(request):
         if session:
             status, _, _, leaked = request(ENDPOINT, None, {**auth, "Mcp-Session-Id": session}, method="DELETE")
             require(status in (200, 202, 204) and not leaked, "会话关闭失败；不得将405视为成功")
-    print("通过：缺失401；换token/跨Beta前缀403；production五工具目录；无效上游凭证isError且不回显；会话已关闭")
+    print("通过：缺失401；换token/跨Beta前缀403；production目录 " + str(len(NAMES)) + " 项；无效上游凭证isError且不回显；会话已关闭")
 
 
 if __name__ == "__main__":

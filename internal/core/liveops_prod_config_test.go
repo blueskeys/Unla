@@ -39,6 +39,16 @@ func TestLiveopsProdConfig(t *testing.T) {
 		"liveops_get_session_assortment": `{"planned_session_id":"s1","assortment_version":0,"generation_status":"not_generated","items":[],"private":"DO_NOT_EXPOSE"}`,
 		"liveops_list_replays":           `{"items":[{"session_key":"r1","latest":{"summary":{"watch_ucnt":10,"private":"DO_NOT_EXPOSE"}}},{"session_key":"r2","latest":null}]}`,
 	}
+	fixtureData, err := os.ReadFile("testdata/liveops_beta_expansion.json")
+	require.NoError(t, err)
+	var expansion map[string]string
+	require.NoError(t, json.Unmarshal(fixtureData, &expansion))
+	for name, fixture := range expansion {
+		fixtures[name] = fixture
+	}
+	fixtures["liveops_get_pallet_product"] = `{"goods_id":"g1","lifecycle_type":"new","version":1,"private":"DO_NOT_EXPOSE"}`
+	fixtures["liveops_list_products"] = `{"items":[{"sku":"SKU1","product_name":"fixture","cost":"DO_NOT_EXPOSE"}],"total":1,"page":1,"page_size":20,"total_pages":1,"summary":"DO_NOT_EXPOSE"}`
+	fixtures["liveops_get_product_workspace"] = `{"single_items":[{"sku":"SKU1","cost":"DO_NOT_EXPOSE"}],"sets":[{"id":"set1","name":"fixture","created_by":"DO_NOT_EXPOSE"}]}`
 	data, err = os.ReadFile("../../deploy/ubuntu243/liveops-beta.yaml")
 	require.NoError(t, err)
 	var beta config.MCPConfig
@@ -47,8 +57,9 @@ func TestLiveopsProdConfig(t *testing.T) {
 	for _, tool := range beta.Tools {
 		baseline[tool.Name] = tool
 	}
-	require.Len(t, cfg.Tools, 5)
-	require.Len(t, cfg.Servers[0].AllowedTools, 5)
+	require.Len(t, cfg.Tools, 59)
+	require.Len(t, cfg.Servers[0].AllowedTools, 59)
+	require.NotContains(t, cfg.Servers[0].AllowedTools, "liveops_get_board_goods")
 	seen := make(map[string]bool)
 	for _, tool := range cfg.Tools {
 		t.Run(tool.Name, func(t *testing.T) {
@@ -61,25 +72,74 @@ func TestLiveopsProdConfig(t *testing.T) {
 			require.Equal(t, strings.Replace(original.Endpoint, "http://100.92.212.67:9731", "https://ops.api.kindgem.net", 1), tool.Endpoint)
 			contract := tool
 			contract.Endpoint, contract.Description, contract.ResponseBody = original.Endpoint, original.Description, original.ResponseBody
+			if tool.Name == "liveops_get_hot_order_goods_fact" {
+				contract.Args = append([]config.ArgConfig(nil), tool.Args...)
+				for i := range contract.Args {
+					contract.Args[i].Description = original.Args[i].Description
+				}
+			}
 			require.Equal(t, original, contract)
 			fixture, ok := fixtures[tool.Name]
 			require.True(t, ok)
-			render := func(target config.ToolConfig) map[string]interface{} {
+			render := func(target config.ToolConfig) interface{} {
 				resp := &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": {"application/json"}}, Body: io.NopCloser(strings.NewReader(fixture))}
 				result, err := CreateResponseHandlerChain().Handle(resp, &target, template.NewContext())
 				require.NoError(t, err)
 				require.False(t, result.IsError)
 				text := result.Content[0].(*mcp.TextContent).Text
 				require.NotContains(t, text, "DO_NOT_EXPOSE")
-				var output map[string]interface{}
+				var output interface{}
 				require.NoError(t, json.Unmarshal([]byte(text), &output))
 				return output
 			}
-			actual, expected := render(tool), render(original)
+			actual := render(tool).(map[string]interface{})
+			expected := render(original)
 			require.Equal(t, "production", actual["environment"])
-			delete(actual, "environment")
-			delete(expected, "environment")
-			require.Equal(t, expected, actual)
+			if projected, wrapped := actual["data"]; wrapped {
+				require.Equal(t, expected, projected)
+			} else {
+				delete(actual, "environment")
+				delete(expected.(map[string]interface{}), "environment")
+				require.Equal(t, expected, actual)
+			}
+			resp := &http.Response{StatusCode: http.StatusForbidden, Header: http.Header{"Content-Type": {"application/json"}}, Body: io.NopCloser(strings.NewReader(`{"detail":"DO_NOT_EXPOSE"}`))}
+			result, err := CreateResponseHandlerChain().Handle(resp, &tool, template.NewContext())
+			if err == nil {
+				require.True(t, result.IsError)
+				encoded, marshalErr := json.Marshal(result)
+				require.NoError(t, marshalErr)
+				require.NotContains(t, string(encoded), "DO_NOT_EXPOSE")
+			} else {
+				require.NotContains(t, err.Error(), "DO_NOT_EXPOSE")
+			}
 		})
+	}
+}
+
+func TestLiveopsProdRejectsNestedFields(t *testing.T) {
+	data, err := os.ReadFile("../../deploy/ubuntu243/liveops-prod.yaml")
+	require.NoError(t, err)
+	var cfg config.MCPConfig
+	require.NoError(t, yaml.Unmarshal(data, &cfg))
+	fixtures := map[string][]string{
+		"liveops_list_replays":          {`{"items":[{"latest":{"summary":{"watch_ucnt":{"secret":"DO_NOT_EXPOSE"}}}}]}`, `{"items":[{"latest":{"summary":{"fans":["DO_NOT_EXPOSE"]}}}]}`},
+		"liveops_list_products":         {`{"items":[{"sku":{"secret":"DO_NOT_EXPOSE"}}]}`, `{"items":[],"total":{"secret":"DO_NOT_EXPOSE"}}`, `{"items":[` + strings.Repeat(`{},`, 20) + `{}` + `]}`},
+		"liveops_get_product_workspace": {`{"single_items":[],"sets":[{"name":{"secret":"DO_NOT_EXPOSE"}}]}`, `{"single_items":[],"sets":[` + strings.Repeat(`{},`, 1000) + `{}` + `]}`},
+	}
+	for _, tool := range cfg.Tools {
+		for _, fixture := range fixtures[tool.Name] {
+			t.Run(tool.Name, func(t *testing.T) {
+				resp := &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": {"application/json"}}, Body: io.NopCloser(strings.NewReader(fixture))}
+				result, err := CreateResponseHandlerChain().Handle(resp, &tool, template.NewContext())
+				if err != nil {
+					require.NotContains(t, err.Error(), "DO_NOT_EXPOSE")
+				} else {
+					require.True(t, result.IsError)
+					encoded, marshalErr := json.Marshal(result)
+					require.NoError(t, marshalErr)
+					require.NotContains(t, string(encoded), "DO_NOT_EXPOSE")
+				}
+			})
+		}
 	}
 }
